@@ -2,6 +2,8 @@ name: Build APK
 on:
   push:
   workflow_dispatch:
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -16,7 +18,20 @@ jobs:
         with:
           gradle-version: 8.7
       - run: gradle assembleDebug --no-daemon
+      - run: |
+          cp app/build/outputs/apk/debug/app-debug.apk AJIPTV.apk
+          cp admin/build/outputs/apk/debug/admin-debug.apk AJIPTV-Admin.apk
       - uses: actions/upload-artifact@v4
         with:
           name: AJIPTV-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: AJIPTV.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AJIPTV-Admin-apk
+          path: AJIPTV-Admin.apk
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: AJIPTV v${{ github.run_number }}
+          files: AJIPTV.apk
+          make_latest: true
