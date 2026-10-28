@@ -10,48 +10,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: unzip -o project.zip
-      - name: Force Inject FFmpeg Audio Decoder
-        shell: bash
-        run: |
-          python3 -c "
-          import os
-
-          # 1. Force append FFmpeg dependency directly to app/build.gradle.kts
-          gradle_path = 'app/build.gradle.kts'
-          if os.path.exists(gradle_path):
-              with open(gradle_path, 'r', encoding='utf-8') as f:
-                  g = f.read()
-              if 'media3-ffmpeg-decoder' not in g:
-                  g += '\n\ndependencies {\n    implementation(\"org.jellyfin.media3:media3-ffmpeg-decoder:1.3.1+1\")\n}\n'
-              if 'useLegacyPackaging' not in g:
-                  g += '\nandroid {\n    packaging {\n        jniLibs {\n            useLegacyPackaging = true\n        }\n    }\n}\n'
-              with open(gradle_path, 'w', encoding='utf-8') as f:
-                  f.write(g)
-              print('✓ Appended FFmpeg decoder to build.gradle.kts')
-
-          # 2. Force extractNativeLibs in AndroidManifest.xml
-          manifest_path = 'app/src/main/AndroidManifest.xml'
-          if os.path.exists(manifest_path):
-              with open(manifest_path, 'r', encoding='utf-8') as f:
-                  m = f.read()
-              if 'android:extractNativeLibs' not in m:
-                  m = m.replace('<application', '<application\n        android:extractNativeLibs=\"true\"')
-                  with open(manifest_path, 'w', encoding='utf-8') as f:
-                      f.write(m)
-              print('✓ Injected extractNativeLibs in AndroidManifest.xml')
-
-          # 3. Force PREFER in AjPlayer.kt
-          player_path = 'app/src/main/java/com/aj/iptv/player/AjPlayer.kt'
-          if os.path.exists(player_path):
-              with open(player_path, 'r', encoding='utf-8') as f:
-                  p = f.read()
-              p = p.replace('EXTENSION_RENDERER_MODE_ON', 'EXTENSION_RENDERER_MODE_PREFER')
-              p = p.replace('ffPrefer: Boolean = false', 'ffPrefer: Boolean = true')
-              p = p.replace('.setPreferredAudioMimeTypes(MimeTypes.AUDIO_AAC, MimeTypes.AUDIO_MPEG)', '')
-              with open(player_path, 'w', encoding='utf-8') as f:
-                  f.write(p)
-              print('✓ Forced PREFER in AjPlayer.kt')
-          "
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -77,9 +35,6 @@ jobs:
       - run: |
           cp app/build/outputs/apk/debug/app-debug.apk AJIPTV.apk
           cp admin/build/outputs/apk/debug/admin-debug.apk AJIPTV-Admin.apk
-      - name: Verify Audio Files in APK
-        run: |
-          unzip -l AJIPTV.apk | grep "libffmpegJNI.so" || echo "Check complete"
       - uses: actions/upload-artifact@v4
         with:
           name: AJIPTV-apk
