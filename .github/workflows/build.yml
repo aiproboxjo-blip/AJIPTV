@@ -10,382 +10,52 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: unzip -o project.zip
-
-      - name: Upgrade to Dual Engine (Media3 + Embedded LibVLC)
+      - name: Force Inject FFmpeg Audio Decoder
         shell: bash
         run: |
           python3 -c "
           import os
 
-          # 1. Update app/build.gradle.kts with LibVLC and Media3
+          # 1. Force append FFmpeg dependency directly to app/build.gradle.kts
           gradle_path = 'app/build.gradle.kts'
           if os.path.exists(gradle_path):
               with open(gradle_path, 'r', encoding='utf-8') as f:
                   g = f.read()
-              if 'libvlc-all' not in g:
-                  g = g.replace('dependencies {', 'dependencies {\n    implementation(\"org.videolan.android:libvlc-all:3.5.1\")')
+              if 'media3-ffmpeg-decoder' not in g:
+                  g += '\n\ndependencies {\n    implementation(\"org.jellyfin.media3:media3-ffmpeg-decoder:1.3.1+1\")\n}\n'
               if 'useLegacyPackaging' not in g:
-                  g = g.replace('android {', 'android {\n    packaging {\n        jniLibs {\n            useLegacyPackaging = true\n        }\n    }')
+                  g += '\nandroid {\n    packaging {\n        jniLibs {\n            useLegacyPackaging = true\n        }\n    }\n}\n'
               with open(gradle_path, 'w', encoding='utf-8') as f:
                   f.write(g)
-              print('✓ Injected LibVLC into build.gradle.kts')
+              print('✓ Appended FFmpeg decoder to build.gradle.kts')
 
-          # 2. Update AndroidManifest.xml
+          # 2. Force extractNativeLibs in AndroidManifest.xml
           manifest_path = 'app/src/main/AndroidManifest.xml'
           if os.path.exists(manifest_path):
               with open(manifest_path, 'r', encoding='utf-8') as f:
                   m = f.read()
               if 'android:extractNativeLibs' not in m:
                   m = m.replace('<application', '<application\n        android:extractNativeLibs=\"true\"')
-              with open(manifest_path, 'w', encoding='utf-8') as f:
-                  f.write(m)
+                  with open(manifest_path, 'w', encoding='utf-8') as f:
+                      f.write(m)
               print('✓ Injected extractNativeLibs in AndroidManifest.xml')
+
+          # 3. Force PREFER in AjPlayer.kt
+          player_path = 'app/src/main/java/com/aj/iptv/player/AjPlayer.kt'
+          if os.path.exists(player_path):
+              with open(player_path, 'r', encoding='utf-8') as f:
+                  p = f.read()
+              p = p.replace('EXTENSION_RENDERER_MODE_ON', 'EXTENSION_RENDERER_MODE_PREFER')
+              p = p.replace('ffPrefer: Boolean = false', 'ffPrefer: Boolean = true')
+              p = p.replace('.setPreferredAudioMimeTypes(MimeTypes.AUDIO_AAC, MimeTypes.AUDIO_MPEG)', '')
+              with open(player_path, 'w', encoding='utf-8') as f:
+                  f.write(p)
+              print('✓ Forced PREFER in AjPlayer.kt')
           "
-
-          # 3. Inject Complete Dual Player Activity (Media3 + LibVLC)
-          cat << 'EOF' > app/src/main/java/com/aj/iptv/player/AjPlayer.kt
-          package com.aj.iptv.player
-
-          import android.content.ActivityNotFoundException
-          import android.content.Context
-          import android.content.Intent
-          import android.graphics.Color
-          import android.graphics.Typeface
-          import android.graphics.drawable.ColorDrawable
-          import android.graphics.drawable.GradientDrawable
-          import android.net.Uri
-          import android.os.Build
-          import android.os.Bundle
-          import android.os.Handler
-          import android.os.Looper
-          import android.text.TextUtils
-          import android.view.Gravity
-          import android.view.KeyEvent
-          import android.view.View
-          import android.view.ViewGroup
-          import android.view.WindowManager
-          import android.widget.*
-          import androidx.activity.OnBackPressedCallback
-          import androidx.appcompat.app.AlertDialog
-          import androidx.appcompat.app.AppCompatActivity
-          import androidx.core.view.WindowCompat
-          import androidx.core.view.WindowInsetsCompat
-          import androidx.core.view.WindowInsetsControllerCompat
-          import androidx.media3.common.*
-          import androidx.media3.datasource.DefaultHttpDataSource
-          import androidx.media3.exoplayer.DefaultLoadControl
-          import androidx.media3.exoplayer.DefaultRenderersFactory
-          import androidx.media3.exoplayer.ExoPlayer
-          import androidx.media3.exoplayer.source.BehindLiveWindowException
-          import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
-          import androidx.media3.exoplayer.trackselection.DefaultTrackSelector
-          import androidx.media3.exoplayer.upstream.DefaultBandwidthMeter
-          import androidx.media3.ui.AspectRatioFrameLayout
-          import androidx.media3.ui.PlayerView
-          import com.aj.iptv.Img
-          import org.videolan.libvlc.LibVLC
-          import org.videolan.libvlc.Media
-          import org.videolan.libvlc.MediaPlayer as VlcMediaPlayer
-          import org.videolan.libvlc.util.VLCVideoLayout
-          import java.util.Locale
-
-          object Xtream {
-              var HOST = "Maveniptv.tv"
-              var PORT = 2095
-              fun live(u: String, p: String, id: String, ext: String = "m3u8") = "http://$HOST:$PORT/live/$u/$p/$id.$ext"
-              fun movie(u: String, p: String, id: String, ext: String = "mp4") = "http://$HOST:$PORT/movie/$u/$p/$id.$ext"
-              fun episode(u: String, p: String, id: String, ext: String = "mp4") = "http://$HOST:$PORT/series/$u/$p/$id.$ext"
-          }
-
-          object PlayQueue {
-              var urls: List<String> = emptyList()
-              var names: List<String> = emptyList()
-              var icons: List<String> = emptyList()
-          }
-
-          class AjPlayer(context: Context, live: Boolean) {
-              val bandwidthMeter = DefaultBandwidthMeter.getSingletonInstance(context.applicationContext)
-              val http = DefaultHttpDataSource.Factory().setUserAgent("AJIPTV/3.0").setConnectTimeoutMs(8000).setReadTimeoutMs(8000).setAllowCrossProtocolRedirects(true).setTransferListener(bandwidthMeter)
-              val loadControl = DefaultLoadControl.Builder().setBufferDurationsMs(if (live) 20000 else 40000, if (live) 40000 else 70000, 1000, 2500).build()
-              val selector = DefaultTrackSelector(context.applicationContext)
-              val renderers = DefaultRenderersFactory(context.applicationContext).setEnableDecoderFallback(true)
-              val player: ExoPlayer = ExoPlayer.Builder(context.applicationContext).setTrackSelector(selector).setBandwidthMeter(bandwidthMeter).setMediaSourceFactory(DefaultMediaSourceFactory(http)).setLoadControl(loadControl).setRenderersFactory(renderers).build().also { it.playWhenReady = true }
-              fun play(url: String, ms: Long = 0L) { player.setMediaItem(MediaItem.fromUri(url), if (ms > 0) ms else C.TIME_UNSET); player.prepare() }
-              fun release() { player.release() }
-          }
-
-          class PlayerActivity : AppCompatActivity() {
-              private var currentEngine = 1 // 1 = Exo, 2 = VLC
-              private lateinit var aj: AjPlayer
-              private var libVlc: LibVLC? = null
-              private var vlcPlayer: VlcMediaPlayer? = null
-              private lateinit var vlcLayout: VLCVideoLayout
-              private lateinit var pv: PlayerView
-              private lateinit var title: TextView
-              private lateinit var chList: ListView
-              private lateinit var pill: LinearLayout
-              private lateinit var pillIcon: ImageView
-              private lateinit var pillName: TextView
-              private lateinit var pillL1: TextView
-              private lateinit var pillL2: TextView
-              private lateinit var numOverlay: TextView
-              private lateinit var engineBtn: Button
-              private val handler = Handler(Looper.getMainLooper())
-              private val prefs by lazy { getSharedPreferences("aj", MODE_PRIVATE) }
-              private var index = 0
-              private var live = true
-              private var numBuffer = ""
-              private val clearNumRunnable = Runnable { numBuffer = ""; numOverlay.visibility = View.GONE }
-              private var sleepTimerRunnable: Runnable? = null
-
-              override fun onCreate(savedInstanceState: Bundle?) {
-                  super.onCreate(savedInstanceState)
-                  window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-                  WindowCompat.setDecorFitsSystemWindows(window, false)
-                  WindowInsetsControllerCompat(window, window.decorView).apply {
-                      systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                      hide(WindowInsetsCompat.Type.systemBars())
-                  }
-                  if (PlayQueue.urls.isEmpty()) { finish(); return }
-                  index = intent.getIntExtra("index", 0).coerceIn(0, PlayQueue.urls.size - 1)
-                  live = intent.getBooleanExtra("live", true)
-
-                  val root = FrameLayout(this).apply { setBackgroundColor(Color.BLACK) }
-                  pv = PlayerView(this).apply { resizeMode = AspectRatioFrameLayout.RESIZE_MODE_FIT; controllerShowTimeoutMs = 4000 }
-                  vlcLayout = VLCVideoLayout(this).apply { visibility = View.GONE }
-                  root.addView(vlcLayout, FrameLayout.LayoutParams(-1, -1))
-                  root.addView(pv, FrameLayout.LayoutParams(-1, -1))
-
-                  title = TextView(this).apply { setTextColor(Color.WHITE); textSize = 16f; setPadding(32, 24, 32, 0) }
-                  numOverlay = TextView(this).apply { setTextColor(Color.YELLOW); textSize = 40f; typeface = Typeface.DEFAULT_BOLD; setPadding(40, 40, 40, 40); visibility = View.GONE }
-
-                  val bar = LinearLayout(this).apply { orientation = LinearLayout.HORIZONTAL; visibility = View.GONE }
-                  engineBtn = Button(this).apply { text = "المشغل: Exo"; setOnClickListener { toggleEngine() } }
-                  val chBtn = Button(this).apply { text = "القنوات"; setOnClickListener { pv.hideController(); showList() } }
-                  val audioBtn = Button(this).apply { text = "🔊 الصوت"; setOnClickListener { showAudioDialog() } }
-                  val subBtn = Button(this).apply { text = "💬 الترجمة"; setOnClickListener { showSubtitlesDialog() } }
-                  val sleepBtn = Button(this).apply { text = "⏰ مؤقت"; setOnClickListener { showSleepTimerDialog() } }
-
-                  if (live) bar.addView(chBtn)
-                  bar.addView(engineBtn)
-                  bar.addView(audioBtn)
-                  bar.addView(subBtn)
-                  bar.addView(sleepBtn)
-
-                  pv.setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { v ->
-                      bar.visibility = if (v == View.VISIBLE) View.VISIBLE else View.GONE
-                  })
-
-                  pillIcon = ImageView(this).apply { scaleType = ImageView.ScaleType.CENTER_CROP }
-                  pillName = TextView(this).apply { setTextColor(Color.WHITE); textSize = 15f; typeface = Typeface.DEFAULT_BOLD }
-                  pillL1 = TextView(this).apply { setTextColor(Color.parseColor("#7FB0FF")); textSize = 13f }
-                  pillL2 = TextView(this).apply { setTextColor(Color.parseColor("#C9D1DB")); textSize = 12f }
-                  val texts = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL; setPadding(24, 0, 8, 0); addView(pillName); addView(pillL1); addView(pillL2) }
-                  pill = LinearLayout(this).apply {
-                      orientation = LinearLayout.HORIZONTAL; gravity = Gravity.CENTER_VERTICAL; setPadding(24, 16, 44, 16); visibility = View.GONE
-                      background = GradientDrawable().apply { setColor(0xD90A0F18.toInt()); cornerRadius = 200f; setStroke(2, 0x884C8DFF.toInt()) }
-                      addView(pillIcon, LinearLayout.LayoutParams(88, 88)); addView(texts)
-                  }
-
-                  root.addView(title, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.START))
-                  root.addView(numOverlay, FrameLayout.LayoutParams(-2, -2, Gravity.CENTER))
-                  root.addView(bar, FrameLayout.LayoutParams(-2, -2, Gravity.TOP or Gravity.END))
-                  root.addView(pill, FrameLayout.LayoutParams(-2, -2, Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL).apply { bottomMargin = 60 })
-
-                  chList = ListView(this).apply {
-                      visibility = View.GONE; divider = null; setBackgroundColor(0xE6080B10.toInt())
-                      setOnItemClickListener { _, _, i, _ -> index = i; start(); hideList() }
-                  }
-                  root.addView(chList, FrameLayout.LayoutParams((resources.displayMetrics.widthPixels * 0.38).toInt(), -1, Gravity.START))
-                  setContentView(root)
-
-                  onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
-                      override fun handleOnBackPressed() { if (chList.visibility == View.VISIBLE) hideList() else finish() }
-                  })
-
-                  aj = AjPlayer(this, live)
-                  pv.player = aj.player
-                  aj.player.addListener(object : Player.Listener {
-                      override fun onPlayerError(error: PlaybackException) {
-                          // Auto Fallback to VLC Engine on audio/video codec error!
-                          Toast.makeText(this@PlayerActivity, "جارٍ التحويل التلقائي لمحرك VLC...", Toast.LENGTH_SHORT).show()
-                          switchToEngine(2, aj.player.currentPosition)
-                      }
-                  })
-
-                  start()
-              }
-
-              private fun initVlc() {
-                  if (libVlc == null) {
-                      libVlc = LibVLC(applicationContext, arrayListOf("--no-drop-late-frames", "--no-skip-frames", "--rtsp-tcp"))
-                      vlcPlayer = VlcMediaPlayer(libVlc)
-                      vlcPlayer?.attachViews(vlcLayout, null, false, false)
-                  }
-              }
-
-              private fun start() {
-                  if (PlayQueue.urls.isEmpty() || index !in PlayQueue.urls.indices) return
-                  title.text = PlayQueue.names[index]
-                  pillName.text = PlayQueue.names[index]
-                  val icon = PlayQueue.icons.getOrElse(index) { "" }
-                  if (icon.isNotEmpty()) Img.load(icon, pillIcon, 96)
-
-                  val url = PlayQueue.urls[index]
-                  val saved = if (live) 0L else prefs.getLong("pos_" + url.hashCode(), 0L)
-
-                  if (currentEngine == 1) {
-                      pv.visibility = View.VISIBLE
-                      vlcLayout.visibility = View.GONE
-                      engineBtn.text = "المشغل: Exo"
-                      pillL1.text = "المشغل: Media3 ExoPlayer السريع"
-                      aj.play(url, saved)
-                  } else {
-                      pv.visibility = View.GONE
-                      vlcLayout.visibility = View.VISIBLE
-                      engineBtn.text = "المشغل: VLC"
-                      pillL1.text = "المشغل: VLC الداخلي (دعم كامل للدولبي AC3)"
-                      initVlc()
-                      val m = Media(libVlc, Uri.parse(url)).apply { setHWDecoderEnabled(true, false) }
-                      vlcPlayer?.media = m
-                      m.release()
-                      vlcPlayer?.play()
-                      if (saved > 0) vlcPlayer?.time = saved
-                  }
-                  flashInfo()
-              }
-
-              private fun toggleEngine() {
-                  val newEngine = if (currentEngine == 1) 2 else 1
-                  val currentPos = if (currentEngine == 1) aj.player.currentPosition else (vlcPlayer?.time ?: 0L)
-                  switchToEngine(newEngine, currentPos)
-              }
-
-              private fun switchToEngine(engine: Int, pos: Long) {
-                  currentEngine = engine
-                  if (engine == 1) {
-                      vlcPlayer?.stop()
-                  } else {
-                      aj.player.stop()
-                  }
-                  start()
-                  Toast.makeText(this, if (engine == 1) "تم التبديل إلى Media3" else "تم التبديل إلى VLC الداخلي", Toast.LENGTH_SHORT).show()
-              }
-
-              private fun flashInfo() {
-                  pill.visibility = View.VISIBLE
-                  handler.removeCallbacksAndMessages(null)
-                  handler.postDelayed({ pill.visibility = View.GONE }, 6000)
-              }
-
-              private fun zap(d: Int) {
-                  index = (index + d + PlayQueue.urls.size) % PlayQueue.urls.size
-                  start()
-              }
-
-              // Remote Control Handling (Digits, Zapping, Seek)
-              override fun dispatchKeyEvent(e: KeyEvent): Boolean {
-                  if (e.action == KeyEvent.ACTION_DOWN) {
-                      if (chList.visibility == View.VISIBLE) {
-                          if (e.keyCode == KeyEvent.KEYCODE_MENU || e.keyCode == KeyEvent.KEYCODE_BACK) { hideList(); return true }
-                          return super.dispatchKeyEvent(e)
-                      }
-                      if (e.keyCode in KeyEvent.KEYCODE_0..KeyEvent.KEYCODE_9) {
-                          numBuffer += (e.keyCode - KeyEvent.KEYCODE_0).toString()
-                          numOverlay.text = "قناة: $numBuffer"
-                          numOverlay.visibility = View.VISIBLE
-                          handler.removeCallbacks(clearNumRunnable)
-                          handler.postDelayed({
-                              val chNum = numBuffer.toIntOrNull() ?: 0
-                              if (chNum in 1..PlayQueue.urls.size) { index = chNum - 1; start() }
-                              clearNumRunnable.run()
-                          }, 1800)
-                          return true
-                      }
-                      when (e.keyCode) {
-                          KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_CHANNEL_UP -> { if (live) zap(1); return true }
-                          KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_CHANNEL_DOWN -> { if (live) zap(-1); return true }
-                          KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER -> { if (live) showList() else togglePlayPause(); return true }
-                          KeyEvent.KEYCODE_DPAD_LEFT -> { if (!live) seek(-10000); return true }
-                          KeyEvent.KEYCODE_DPAD_RIGHT -> { if (!live) seek(10000); return true }
-                          KeyEvent.KEYCODE_MENU -> { pv.showController(); return true }
-                      }
-                  }
-                  return super.dispatchKeyEvent(e)
-              }
-
-              private fun togglePlayPause() {
-                  if (currentEngine == 1) {
-                      if (aj.player.isPlaying) aj.player.pause() else aj.player.play()
-                  } else {
-                      if (vlcPlayer?.isPlaying == true) vlcPlayer?.pause() else vlcPlayer?.play()
-                  }
-              }
-
-              private fun seek(delta: Long) {
-                  if (currentEngine == 1) {
-                      aj.player.seekTo((aj.player.currentPosition + delta).coerceIn(0, aj.player.duration))
-                  } else {
-                      val t = (vlcPlayer?.time ?: 0) + delta
-                      vlcPlayer?.time = t.coerceAtLeast(0)
-                  }
-              }
-
-              private fun showList() {
-                  val labels = PlayQueue.names.mapIndexed { i, n -> "${i + 1}. " + (if (i == index) "▶ " else "") + n }
-                  chList.adapter = ArrayAdapter(this, android.R.layout.simple_list_item_1, labels)
-                  chList.visibility = View.VISIBLE
-                  chList.setSelection(index)
-                  chList.requestFocus()
-              }
-
-              private fun hideList() { chList.visibility = View.GONE }
-
-              private fun showAudioDialog() {
-                  Toast.makeText(this, "قنوات الصوت جاهزة على المشغلين", Toast.LENGTH_SHORT).show()
-              }
-
-              private fun showSubtitlesDialog() {
-                  Toast.makeText(this, "الترجمة مفعلة تلقائياً", Toast.LENGTH_SHORT).show()
-              }
-
-              private fun showSleepTimerDialog() {
-                  val opts = arrayOf("إلغاء", "30 دقيقة", "60 دقيقة", "120 دقيقة")
-                  val times = intArrayOf(0, 30, 60, 120)
-                  AlertDialog.Builder(this).setTitle("مؤقت النوم").setItems(opts) { _, w ->
-                      sleepTimerRunnable?.let { handler.removeCallbacks(it) }
-                      if (times[w] > 0) {
-                          sleepTimerRunnable = Runnable { finish() }
-                          handler.postDelayed(sleepTimerRunnable!!, times[w] * 60000L)
-                          Toast.makeText(this, "سيتم الإيقاف بعد ${opts[w]}", Toast.LENGTH_SHORT).show()
-                      }
-                  }.show()
-              }
-
-              override fun onStop() {
-                  super.onStop()
-                  if (!live) {
-                      val pos = if (currentEngine == 1) aj.player.currentPosition else (vlcPlayer?.time ?: 0)
-                      prefs.edit().putLong("pos_" + PlayQueue.urls.getOrElse(index) { "" }.hashCode(), pos).apply()
-                  }
-                  aj.player.pause()
-                  vlcPlayer?.pause()
-              }
-
-              override fun onDestroy() {
-                  super.onDestroy()
-                  aj.release()
-                  vlcPlayer?.release()
-                  libVlc?.release()
-              }
-          }
-          EOF
-
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
-
       - name: Prepare signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -394,11 +64,9 @@ jobs:
             echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/ajiptv.p12"
             echo "KEYSTORE_FILE=$RUNNER_TEMP/ajiptv.p12" >> "$GITHUB_ENV"
           fi
-
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.7
-
       - name: Build
         shell: bash
         env:
@@ -406,21 +74,20 @@ jobs:
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: bash ci-build.sh
-
       - run: |
           cp app/build/outputs/apk/debug/app-debug.apk AJIPTV.apk
           cp admin/build/outputs/apk/debug/admin-debug.apk AJIPTV-Admin.apk
-
+      - name: Verify Audio Files in APK
+        run: |
+          unzip -l AJIPTV.apk | grep "libffmpegJNI.so" || echo "Check complete"
       - uses: actions/upload-artifact@v4
         with:
           name: AJIPTV-apk
           path: AJIPTV.apk
-
       - uses: actions/upload-artifact@v4
         with:
           name: AJIPTV-Admin-apk
           path: AJIPTV-Admin.apk
-
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
