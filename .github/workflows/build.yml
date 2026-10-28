@@ -10,6 +10,48 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: unzip -o project.zip
+      - name: Fix FFmpeg Audio on TV Box
+        shell: bash
+        run: |
+          python3 -c "
+          import os
+
+          # 1. Force extractNativeLibs for Android TV Box
+          manifest_path = 'app/src/main/AndroidManifest.xml'
+          if os.path.exists(manifest_path):
+              with open(manifest_path, 'r', encoding='utf-8') as f:
+                  m = f.read()
+              m = m.replace('android:extractNativeLibs=\"false\"', 'android:extractNativeLibs=\"true\"')
+              if 'android:extractNativeLibs' not in m:
+                  m = m.replace('<application', '<application\n        android:extractNativeLibs=\"true\"')
+              with open(manifest_path, 'w', encoding='utf-8') as f:
+                  f.write(m)
+              print('✓ Fixed AndroidManifest.xml')
+
+          # 2. Force legacy packaging to package libffmpegJNI.so properly
+          gradle_path = 'app/build.gradle.kts'
+          if os.path.exists(gradle_path):
+              with open(gradle_path, 'r', encoding='utf-8') as f:
+                  g = f.read()
+              if 'useLegacyPackaging' not in g:
+                  g = g.replace('android {', 'android {\n    packaging {\n        jniLibs {\n            useLegacyPackaging = true\n        }\n    }')
+              g = g.replace('media3-ffmpeg-decoder:1.3.1+1', 'media3-ffmpeg-decoder:1.3.1+2')
+              with open(gradle_path, 'w', encoding='utf-8') as f:
+                  f.write(g)
+              print('✓ Fixed app/build.gradle.kts')
+
+          # 3. Force FFmpeg PREFER and remove audio track filters
+          player_path = 'app/src/main/java/com/aj/iptv/player/AjPlayer.kt'
+          if os.path.exists(player_path):
+              with open(player_path, 'r', encoding='utf-8') as f:
+                  p = f.read()
+              p = p.replace('EXTENSION_RENDERER_MODE_ON', 'EXTENSION_RENDERER_MODE_PREFER')
+              p = p.replace('ffPrefer: Boolean = false', 'ffPrefer: Boolean = true')
+              p = p.replace('.setPreferredAudioMimeTypes(MimeTypes.AUDIO_AAC, MimeTypes.AUDIO_MPEG)', '')
+              with open(player_path, 'w', encoding='utf-8') as f:
+                  f.write(p)
+              print('✓ Fixed AjPlayer.kt')
+          "
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
