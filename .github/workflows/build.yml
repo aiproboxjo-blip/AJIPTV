@@ -11,35 +11,19 @@ jobs:
       - uses: actions/checkout@v4
       - run: unzip -o project.zip
 
-      - name: Apply AC3 FFmpeg & Audio Fixes
+      - name: Update Media3 to 1.5.1
         shell: bash
         run: |
           python3 -c "
           import os
-
-          # 1. Update app/build.gradle.kts
           gradle_path = 'app/build.gradle.kts'
           if os.path.exists(gradle_path):
               with open(gradle_path, 'r', encoding='utf-8') as f:
                   g = f.read()
-              if 'useLegacyPackaging' not in g:
-                  g = g.replace('android {', 'android {\n    packaging {\n        jniLibs {\n            useLegacyPackaging = true\n        }\n    }')
-              if 'media3-ffmpeg-decoder' not in g:
-                  g = g.replace('dependencies {', 'dependencies {\n    implementation(\"org.jellyfin.media3:media3-ffmpeg-decoder:1.4.1+1\")')
+              g = g.replace('?: \"1.4.1\"', '?: \"1.5.1\"')
               with open(gradle_path, 'w', encoding='utf-8') as f:
                   f.write(g)
-              print('✓ Injected FFmpeg dependency and legacy packaging into build.gradle.kts')
-
-          # 2. Update AndroidManifest.xml
-          manifest_path = 'app/src/main/AndroidManifest.xml'
-          if os.path.exists(manifest_path):
-              with open(manifest_path, 'r', encoding='utf-8') as f:
-                  m = f.read()
-              if 'android:extractNativeLibs' not in m:
-                  m = m.replace('<application', '<application\n        android:extractNativeLibs=\"true\"')
-              with open(manifest_path, 'w', encoding='utf-8') as f:
-                  f.write(m)
-              print('✓ Injected extractNativeLibs=\"true\" in AndroidManifest.xml')
+              print('✓ Updated Media3 to 1.5.1')
           "
 
       - uses: actions/setup-java@v4
@@ -68,16 +52,11 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: |
           chmod +x gradlew || true
-          ./gradlew assembleDebug --stacktrace || bash ci-build.sh
+          ./gradlew assembleDebug -Pmedia3=1.5.1 --stacktrace || bash ci-build.sh
 
       - run: |
           cp app/build/outputs/apk/debug/app-debug.apk AJIPTV.apk
           cp admin/build/outputs/apk/debug/admin-debug.apk AJIPTV-Admin.apk || true
-
-      - name: Verify Audio Decoders in Final APK
-        run: |
-          echo "=== فحص ملفات الصوت في الـ APK ==="
-          unzip -l AJIPTV.apk | grep "libffmpegJNI.so" || echo "Note: Check finished"
 
       - uses: actions/upload-artifact@v4
         with:
