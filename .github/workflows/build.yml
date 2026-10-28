@@ -10,13 +10,55 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: unzip -o project.zip
-      - name: Inject FFmpeg & Fix Audio
+      - name: Fix FFmpeg Loader & 16-bit PCM
         shell: bash
         run: |
           python3 -c "
           import os
 
-          # 1. Inject FFmpeg decoder dependency into app/build.gradle.kts
+          # 1. Preload FFmpeg libraries in MainActivity so Android TV Box linker finds them
+          main_path = 'app/src/main/java/com/aj/iptv/MainActivity.kt'
+          if os.path.exists(main_path):
+              with open(main_path, 'r', encoding='utf-8') as f:
+                  m = f.read()
+              preload_code = '''
+              // Preload FFmpeg dependencies in correct order for older Android TV boxes
+              for (lib in listOf(\"avutil\", \"swresample\", \"avcodec\", \"ffmpegJNI\")) {
+                  try { System.loadLibrary(lib) } catch (_: Throwable) {}
+              }
+              '''
+              if 'avutil' not in m:
+                  m = m.replace('super.onCreate(savedInstanceState)', 'super.onCreate(savedInstanceState)\n' + preload_code)
+                  with open(main_path, 'w', encoding='utf-8') as f:
+                      f.write(m)
+                  print('✓ Injected library preloading into MainActivity.kt')
+
+          # 2. Fix AjPlayer.kt: preload + force 16-bit PCM output for all TV boxes
+          player_path = 'app/src/main/java/com/aj/iptv/player/AjPlayer.kt'
+          if os.path.exists(player_path):
+              with open(player_path, 'r', encoding='utf-8') as f:
+                  p = f.read()
+              p = p.replace('enableFloatOutput = true', 'enableFloatOutput = false')
+              p = p.replace('setEnableFloatOutput(true)', 'setEnableFloatOutput(false)')
+              p = p.replace('EXTENSION_RENDERER_MODE_ON', 'EXTENSION_RENDERER_MODE_PREFER')
+              p = p.replace('ffPrefer: Boolean = false', 'ffPrefer: Boolean = true')
+              p = p.replace('.setPreferredAudioMimeTypes(MimeTypes.AUDIO_AAC, MimeTypes.AUDIO_MPEG)', '')
+              with open(player_path, 'w', encoding='utf-8') as f:
+                  f.write(p)
+              print('✓ Fixed AjPlayer.kt (16-bit PCM & PREFER mode)')
+
+          # 3. Ensure native libraries are extracted properly
+          manifest_path = 'app/src/main/AndroidManifest.xml'
+          if os.path.exists(manifest_path):
+              with open(manifest_path, 'r', encoding='utf-8') as f:
+                  mf = f.read()
+              if 'android:extractNativeLibs' not in mf:
+                  mf = mf.replace('<application', '<application\n        android:extractNativeLibs=\"true\"')
+                  with open(manifest_path, 'w', encoding='utf-8') as f:
+                      f.write(mf)
+                  print('✓ Injected extractNativeLibs in AndroidManifest.xml')
+
+          # 4. Packaging in app/build.gradle.kts
           gradle_path = 'app/build.gradle.kts'
           if os.path.exists(gradle_path):
               with open(gradle_path, 'r', encoding='utf-8') as f:
@@ -27,30 +69,7 @@ jobs:
                   g = g.replace('android {', 'android {\n    packaging {\n        jniLibs {\n            useLegacyPackaging = true\n        }\n    }')
               with open(gradle_path, 'w', encoding='utf-8') as f:
                   f.write(g)
-              print('✓ Injected FFmpeg dependency into app/build.gradle.kts')
-
-          # 2. Force extractNativeLibs in AndroidManifest.xml
-          manifest_path = 'app/src/main/AndroidManifest.xml'
-          if os.path.exists(manifest_path):
-              with open(manifest_path, 'r', encoding='utf-8') as f:
-                  m = f.read()
-              if 'android:extractNativeLibs' not in m:
-                  m = m.replace('<application', '<application\n        android:extractNativeLibs=\"true\"')
-              with open(manifest_path, 'w', encoding='utf-8') as f:
-                  f.write(m)
-              print('✓ Injected extractNativeLibs in AndroidManifest.xml')
-
-          # 3. Force PREFER FFmpeg in AjPlayer.kt
-          player_path = 'app/src/main/java/com/aj/iptv/player/AjPlayer.kt'
-          if os.path.exists(player_path):
-              with open(player_path, 'r', encoding='utf-8') as f:
-                  p = f.read()
-              p = p.replace('EXTENSION_RENDERER_MODE_ON', 'EXTENSION_RENDERER_MODE_PREFER')
-              p = p.replace('ffPrefer: Boolean = false', 'ffPrefer: Boolean = true')
-              p = p.replace('.setPreferredAudioMimeTypes(MimeTypes.AUDIO_AAC, MimeTypes.AUDIO_MPEG)', '')
-              with open(player_path, 'w', encoding='utf-8') as f:
-                  f.write(p)
-              print('✓ Injected PREFER FFmpeg in AjPlayer.kt')
+              print('✓ Verified app/build.gradle.kts')
           "
       - uses: actions/setup-java@v4
         with:
@@ -77,9 +96,6 @@ jobs:
       - run: |
           cp app/build/outputs/apk/debug/app-debug.apk AJIPTV.apk
           cp admin/build/outputs/apk/debug/admin-debug.apk AJIPTV-Admin.apk
-      - name: Verify Audio Files in APK
-        run: |
-          unzip -l AJIPTV.apk | grep "libffmpegJNI.so" || echo "Check complete"
       - uses: actions/upload-artifact@v4
         with:
           name: AJIPTV-apk
