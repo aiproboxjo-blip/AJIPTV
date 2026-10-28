@@ -25,11 +25,13 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.7
-      - run: gradle assembleDebug --no-daemon
+      - name: Build
+        shell: bash
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: bash ci-build.sh
       - run: |
           cp app/build/outputs/apk/debug/app-debug.apk AJIPTV.apk
           cp admin/build/outputs/apk/debug/admin-debug.apk AJIPTV-Admin.apk
