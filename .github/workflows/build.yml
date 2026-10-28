@@ -23,7 +23,7 @@ jobs:
               with open(settings_path, 'r', encoding='utf-8') as f:
                   s = f.read()
               if 'videolan' not in s:
-                  s = s.replace('mavenCentral()', 'mavenCentral()\n        maven { url = java.net.URI(\"https://code.videolan.org/api/v4/projects/videolan/dependency_proxy/packages\") }')
+                  s = s.replace('mavenCentral()', 'mavenCentral()\n        maven { url = java.net.URI(\"https://videolan.org\") }')
                   with open(settings_path, 'w', encoding='utf-8') as f:
                       f.write(s)
                   print('✓ Added VideoLAN repo')
@@ -39,19 +39,20 @@ jobs:
                       f.write(bg)
                   print('✓ Added FFmpeg decoder dependency to build.gradle')
 
-          # 3. Patch AjPlayer.kt to prefer Software Extension (FFmpeg) for AC3/MP3
+          # 3. Force Global Software Decoding Priority in AjPlayer.kt
           player_path = 'app/src/main/java/com/aj/iptv/player/AjPlayer.kt'
           if os.path.exists(player_path):
               with open(player_path, 'r', encoding='utf-8') as f:
                   p = f.read()
               
+              # حل جذري: إذا وجدنا أي Builder للـ ExoPlayer، نقوم بحقنه مباشرة بمصنع الرندرة المفضل للـ FFmpeg برمجياً
               if 'DefaultRenderersFactory' not in p:
-                  old_builder = 'ExoPlayer.Builder(this)'
-                  new_builder = 'val rf = androidx.media3.exoplayer.DefaultRenderersFactory(this).setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER)\n        val playerBuilder = ExoPlayer.Builder(this, rf)'
-                  if old_builder in p:
-                      p = p.replace(old_builder, new_builder)
-                  print('✓ Patched AjPlayer.kt for FFmpeg Software Audio preference')
+                  # استبدال شامل وذكي لبناء مشغل الميديا لدعم الصوت البرمجي مباشرة
+                  p = p.replace('ExoPlayer.Builder(this)', 'ExoPlayer.Builder(this, androidx.media3.exoplayer.DefaultRenderersFactory(this).setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER))')
+                  p = p.replace('ExoPlayer.Builder(context)', 'ExoPlayer.Builder(context, androidx.media3.exoplayer.DefaultRenderersFactory(context).setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER))')
+                  print('✓ Force injected FFmpeg extension into Player Builders')
 
+              # كودك القديم الخاص بالتشغيل الفوري لـ VLC للأفلام
               p = p.replace('if (prefs.getInt(\"engine\", 0) == 2 && VlcBridge.available()) { openVlc(); return }', 'if (VlcBridge.available() && prefs.getInt(\"engine\", 0) != 1 && (!live || prefs.getInt(\"engine\", 0) == 2)) { openVlc(); return }')
               with open(player_path, 'w', encoding='utf-8') as f:
                   f.write(p)
@@ -69,7 +70,7 @@ jobs:
                   f.write(v)
               print('✓ Fixed VlcActivity.kt')
 
-          # 5. Ensure VlcActivity is in AndroidManifest.xml (تم تصحيح السطر أدناه تماماً)
+          # 5. Ensure VlcActivity is in AndroidManifest.xml
           manifest_path = 'app/src/main/AndroidManifest.xml'
           if os.path.exists(manifest_path):
               with open(manifest_path, 'r', encoding='utf-8') as f:
