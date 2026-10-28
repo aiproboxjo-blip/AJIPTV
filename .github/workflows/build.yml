@@ -11,7 +11,7 @@ jobs:
       - uses: actions/checkout@v4
       - run: unzip -o project.zip
 
-      - name: Optimize VLC Engine Performance & Seeking
+      - name: Patch VLC & Player Settings
         shell: bash
         run: |
           python3 -c "
@@ -26,81 +26,46 @@ jobs:
                   s = s.replace('mavenCentral()', 'mavenCentral()\n        maven { url = java.net.URI(\"https://code.videolan.org/api/v4/projects/videolan/dependency_proxy/packages\") }')
                   with open(settings_path, 'w', encoding='utf-8') as f:
                       f.write(s)
-                  print('✓ VideoLAN Repo Added')
+                  print('✓ Added VideoLAN repo')
 
-          # 2. Patch VlcActivity.kt for instant launch, smooth audio, and working seek
+          # 2. Patch VlcActivity.kt (Speed up buffer, fix audio stutter, fix seek)
           vlc_path = 'app/src/vlc/java/com/aj/iptv/player/VlcActivity.kt'
           if os.path.exists(vlc_path):
               with open(vlc_path, 'r', encoding='utf-8') as f:
                   v = f.read()
-
-              # Optimize VLC Buffer & prevent audio stuttering
-              old_args = 'arrayListOf(\"--network-caching=1500\", \"--no-drop-late-frames\", \"--no-skip-frames\")'
-              new_args = 'arrayListOf(\"--network-caching=800\", \"--drop-late-frames\", \"--skip-frames\", \"--audio-resampler=soxr\", \"--avcodec-fast\", \"--codec=mediacodec_ndk,mediacodec_jni,all\")'
-              v = v.replace(old_args, new_args)
-
-              # Force Hardware Decoding
+              # Fast buffer + stop audio stuttering
+              v = v.replace('arrayListOf(\"--network-caching=1500\", \"--no-drop-late-frames\", \"--no-skip-frames\")', 'arrayListOf(\"--network-caching=600\", \"--drop-late-frames\", \"--skip-frames\", \"--audio-resampler=soxr\", \"--codec=mediacodec_ndk,mediacodec_jni,all\")')
               v = v.replace('m.setHWDecoderEnabled(true, false)', 'm.setHWDecoderEnabled(true, true)')
-
-              # Fix Seek Function
-              old_seek = '''private fun seek(ms: Long) {
-        val p = mp ?: return
-        p.setTime((p.time + ms).coerceAtLeast(0L))
-    }'''
-              new_seek = '''private fun seek(ms: Long) {
-        val p = mp ?: return
-        val cur = p.time
-        val len = p.length
-        val target = if (cur >= 0) (cur + ms).coerceIn(0L, if (len > 0) len else Long.MAX_VALUE) else 0L
-        p.time = target
-        val sign = if (ms > 0) \"+10s\" else \"-10s\"
-        title.text = \"\${PlayQueue.names.getOrElse(index) { \"\" }}  [$sign]\"
-        handler.removeCallbacksAndMessages(null)
-        handler.postDelayed({ title.text = PlayQueue.names.getOrElse(index) { \"\" } }, 2000)
-    }'''
-              v = v.replace(old_seek, new_seek)
-
-              # Fix Remote Key Events to always seek on DPAD Left/Right
-              key_hook = '''override fun dispatchKeyEvent(e: KeyEvent): Boolean {
-        if (e.action == KeyEvent.ACTION_DOWN) {
-            if (::chList.isInitialized && chList.visibility == View.VISIBLE) {
-                if (e.keyCode == KeyEvent.KEYCODE_MENU || e.keyCode == KeyEvent.KEYCODE_BACK) { hideList(); return true }
-                return super.dispatchKeyEvent(e)
-            }
-            when (e.keyCode) {
-                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MEDIA_REWIND -> if (!live) { seek(-10_000); return true }
-                KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> if (!live) { seek(10_000); return true }
-                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
-                    if (live) showList() else togglePause()
-                    return true
-                }
-                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> { togglePause(); return true }
-                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_CHANNEL_UP -> if (live) { zap(1); return true }
-                KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_CHANNEL_DOWN -> if (live) { zap(-1); return true }
-                KeyEvent.KEYCODE_MENU -> { toggleBar(); return true }
-            }
-        }
-        return super.dispatchKeyEvent(e)
-    }'''
-              # Replace entire dispatchKeyEvent block
-              import re
-              v = re.sub(r'override fun dispatchKeyEvent\(e: KeyEvent\): Boolean \{[\s\S]*?return super\.dispatchKeyEvent\(e\)\s*\}', key_hook, v)
-
+              # Working seek with on-screen indicator
+              v = v.replace('p.setTime((p.time + ms).coerceAtLeast(0L))', 'val t = (p.time + ms).coerceIn(0L, if (p.length > 0) p.length else Long.MAX_VALUE); p.time = t; title.text = \"\${PlayQueue.names.getOrElse(index) { \"\" }} [\" + (if (ms > 0) \"+10s\" else \"-10s\") + \"]\"')
+              # Fix remote buttons to seek even when bar is visible
+              v = v.replace('if (e.keyCode == KeyEvent.KEYCODE_MENU) { bar.visibility = View.GONE; return true }', 'if (e.keyCode == KeyEvent.KEYCODE_DPAD_LEFT && !live) { seek(-10_000); return true }\n                if (e.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && !live) { seek(10_000); return true }\n                if (e.keyCode == KeyEvent.KEYCODE_MENU) { bar.visibility = View.GONE; return true }')
               with open(vlc_path, 'w', encoding='utf-8') as f:
                   f.write(v)
-              print('✓ VlcActivity.kt optimized')
+              print('✓ Fixed VlcActivity.kt')
 
-          # 3. Patch PlayerActivity.kt: instant launch to VLC for movies (Zero Delay)
+          # 3. Patch PlayerActivity.kt for 0-second instant launch to VLC for movies
           player_path = 'app/src/main/java/com/aj/iptv/player/AjPlayer.kt'
           if os.path.exists(player_path):
               with open(player_path, 'r', encoding='utf-8') as f:
                   p = f.read()
-              zero_delay = '''live = intent.getBooleanExtra(\"live\", true)
-        if (!live && VlcBridge.available() && prefs.getInt(\"engine\", 0) != 1) { openVlc(); return }'''
-              p = p.replace('live = intent.getBooleanExtra(\"live\", true)', zero_delay)
+              p = p.replace('if (prefs.getInt(\"engine\", 0) == 2 && VlcBridge.available()) { openVlc(); return }', 'if (VlcBridge.available() && prefs.getInt(\"engine\", 0) != 1 && (!live || prefs.getInt(\"engine\", 0) == 2)) { openVlc(); return }')
               with open(player_path, 'w', encoding='utf-8') as f:
                   f.write(p)
-              print('✓ PlayerActivity.kt patched for 0s movie launch')
+              print('✓ Patched AjPlayer.kt for instant movie launch')
+
+          # 4. Ensure VlcActivity is in AndroidManifest.xml
+          manifest_path = 'app/src/main/AndroidManifest.xml'
+          if os.path.exists(manifest_path):
+              with open(manifest_path, 'r', encoding='utf-8') as f:
+                  m = f.read()
+              if 'VlcActivity' not in m:
+                  m = m.replace('</application>', '    <activity android:name=\".player.VlcActivity\" android:exported=\"false\" android:screenOrientation=\"sensorLandscape\" android:configChanges=\"orientation|screenSize|screenLayout|keyboardHidden\" />\n    </application>')
+              if 'android:extractNativeLibs' not in m:
+                  m = m.replace('<application', '<application\n        android:extractNativeLibs=\"true\"')
+              with open(manifest_path, 'w', encoding='utf-8') as f:
+                  f.write(m)
+              print('✓ Verified AndroidManifest.xml')
           "
 
       - uses: actions/setup-java@v4
@@ -121,7 +86,7 @@ jobs:
         with:
           gradle-version: 8.7
 
-      - name: Build Optimized APK
+      - name: Build APK with VLC
         shell: bash
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
