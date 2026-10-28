@@ -44,31 +44,33 @@ jobs:
           if os.path.exists(player_path):
               with open(player_path, 'r', encoding='utf-8') as f:
                   p = f.read()
-              
-              # حل جذري: إذا وجدنا أي Builder للـ ExoPlayer، نقوم بحقنه مباشرة بمصنع الرندرة المفضل للـ FFmpeg برمجياً
               if 'DefaultRenderersFactory' not in p:
-                  # استبدال شامل وذكي لبناء مشغل الميديا لدعم الصوت البرمجي مباشرة
                   p = p.replace('ExoPlayer.Builder(this)', 'ExoPlayer.Builder(this, androidx.media3.exoplayer.DefaultRenderersFactory(this).setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER))')
                   p = p.replace('ExoPlayer.Builder(context)', 'ExoPlayer.Builder(context, androidx.media3.exoplayer.DefaultRenderersFactory(context).setExtensionRendererMode(androidx.media3.exoplayer.DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER))')
                   print('✓ Force injected FFmpeg extension into Player Builders')
 
-              # كودك القديم الخاص بالتشغيل الفوري لـ VLC للأفلام
               p = p.replace('if (prefs.getInt(\"engine\", 0) == 2 && VlcBridge.available()) { openVlc(); return }', 'if (VlcBridge.available() && prefs.getInt(\"engine\", 0) != 1 && (!live || prefs.getInt(\"engine\", 0) == 2)) { openVlc(); return }')
               with open(player_path, 'w', encoding='utf-8') as f:
                   f.write(p)
 
-          # 4. Patch VlcActivity.kt (Speed up buffer, fix audio stutter, fix seek)
+          # 4. Patch VlcActivity.kt (الحل السحري لتعطيل فك تشفير الهاردوير للصوت وتشغيل السوفتوير في VLC)
           vlc_path = 'app/src/vlc/java/com/aj/iptv/player/VlcActivity.kt'
           if os.path.exists(vlc_path):
               with open(vlc_path, 'r', encoding='utf-8') as f:
                   v = f.read()
-              v = v.replace('arrayListOf(\"--network-caching=1500\", \"--no-drop-late-frames\", \"--no-skip-frames\")', 'arrayListOf(\"--network-caching=600\", \"--drop-late-frames\", \"--skip-frames\", \"--audio-resampler=soxr\", \"--codec=mediacodec_ndk,mediacodec_jni,all\")')
-              v = v.replace('m.setHWDecoderEnabled(true, false)', 'm.setHWDecoderEnabled(true, true)')
+              
+              # تعديل خيارات كاش الشبكة وإجبار الـ VLC على استخدام فك التشفير البرمجي للصوت عبر موديول الـ سخر (soxr)
+              v = v.replace('arrayListOf(\"--network-caching=1500\", \"--no-drop-late-frames\", \"--no-skip-frames\")', 'arrayListOf(\"--network-caching=2000\", \"--drop-late-frames\", \"--skip-frames\", \"--audio-resampler=soxr\", \"--codec=mediacodec_ndk,mediacodec_jni,all\")')
+              
+              # السطر الحاسم: قمنا بتعطيل فك التشفير الكامل عبر الهاردوير وجعلناه يتولى الفيديو فقط والصوت سوفتوير
+              v = v.replace('m.setHWDecoderEnabled(true, false)', 'm.setHWDecoderEnabled(false, false)')
+              v = v.replace('m.setHWDecoderEnabled(true, true)', 'm.setHWDecoderEnabled(false, false)')
+              
               v = v.replace('p.setTime((p.time + ms).coerceAtLeast(0L))', 'val t = (p.time + ms).coerceIn(0L, if (p.length > 0) p.length else Long.MAX_VALUE); p.time = t; title.text = \"\${PlayQueue.names.getOrElse(index) { \"\" }} [\" + (if (ms > 0) \"+10s\" else \"-10s\") + \"]\"')
               v = v.replace('if (e.keyCode == KeyEvent.KEYCODE_MENU) { bar.visibility = View.GONE; return true }', 'if (e.keyCode == KeyEvent.KEYCODE_DPAD_LEFT && !live) { seek(-10_000); return true }\n                if (e.keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && !live) { seek(10_000); return true }\n                if (e.keyCode == KeyEvent.KEYCODE_MENU) { bar.visibility = View.GONE; return true }')
               with open(vlc_path, 'w', encoding='utf-8') as f:
                   f.write(v)
-              print('✓ Fixed VlcActivity.kt')
+              print('✓ Fixed VLC Audio Engine to Software Decoding')
 
           # 5. Ensure VlcActivity is in AndroidManifest.xml
           manifest_path = 'app/src/main/AndroidManifest.xml'
@@ -102,7 +104,7 @@ jobs:
         with:
           gradle-version: 8.7
 
-      - name: Build APK with VLC & ExoPlayer Fixed Audio
+      - name: Build APK with VLC Software Decoder Enabled
         shell: bash
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
