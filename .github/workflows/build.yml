@@ -11,20 +11,96 @@ jobs:
       - uses: actions/checkout@v4
       - run: unzip -o project.zip
 
-      - name: Add VideoLAN Repository
+      - name: Optimize VLC Engine Performance & Seeking
         shell: bash
         run: |
           python3 -c "
           import os
-          path = 'settings.gradle.kts'
-          if os.path.exists(path):
-              with open(path, 'r', encoding='utf-8') as f:
+
+          # 1. Add VideoLAN Repo
+          settings_path = 'settings.gradle.kts'
+          if os.path.exists(settings_path):
+              with open(settings_path, 'r', encoding='utf-8') as f:
                   s = f.read()
               if 'videolan' not in s:
                   s = s.replace('mavenCentral()', 'mavenCentral()\n        maven { url = java.net.URI(\"https://code.videolan.org/api/v4/projects/videolan/dependency_proxy/packages\") }')
-                  with open(path, 'w', encoding='utf-8') as f:
+                  with open(settings_path, 'w', encoding='utf-8') as f:
                       f.write(s)
                   print('✓ VideoLAN Repo Added')
+
+          # 2. Patch VlcActivity.kt for instant launch, smooth audio, and working seek
+          vlc_path = 'app/src/vlc/java/com/aj/iptv/player/VlcActivity.kt'
+          if os.path.exists(vlc_path):
+              with open(vlc_path, 'r', encoding='utf-8') as f:
+                  v = f.read()
+
+              # Optimize VLC Buffer & prevent audio stuttering
+              old_args = 'arrayListOf(\"--network-caching=1500\", \"--no-drop-late-frames\", \"--no-skip-frames\")'
+              new_args = 'arrayListOf(\"--network-caching=800\", \"--drop-late-frames\", \"--skip-frames\", \"--audio-resampler=soxr\", \"--avcodec-fast\", \"--codec=mediacodec_ndk,mediacodec_jni,all\")'
+              v = v.replace(old_args, new_args)
+
+              # Force Hardware Decoding
+              v = v.replace('m.setHWDecoderEnabled(true, false)', 'm.setHWDecoderEnabled(true, true)')
+
+              # Fix Seek Function
+              old_seek = '''private fun seek(ms: Long) {
+        val p = mp ?: return
+        p.setTime((p.time + ms).coerceAtLeast(0L))
+    }'''
+              new_seek = '''private fun seek(ms: Long) {
+        val p = mp ?: return
+        val cur = p.time
+        val len = p.length
+        val target = if (cur >= 0) (cur + ms).coerceIn(0L, if (len > 0) len else Long.MAX_VALUE) else 0L
+        p.time = target
+        val sign = if (ms > 0) \"+10s\" else \"-10s\"
+        title.text = \"\${PlayQueue.names.getOrElse(index) { \"\" }}  [$sign]\"
+        handler.removeCallbacksAndMessages(null)
+        handler.postDelayed({ title.text = PlayQueue.names.getOrElse(index) { \"\" } }, 2000)
+    }'''
+              v = v.replace(old_seek, new_seek)
+
+              # Fix Remote Key Events to always seek on DPAD Left/Right
+              key_hook = '''override fun dispatchKeyEvent(e: KeyEvent): Boolean {
+        if (e.action == KeyEvent.ACTION_DOWN) {
+            if (::chList.isInitialized && chList.visibility == View.VISIBLE) {
+                if (e.keyCode == KeyEvent.KEYCODE_MENU || e.keyCode == KeyEvent.KEYCODE_BACK) { hideList(); return true }
+                return super.dispatchKeyEvent(e)
+            }
+            when (e.keyCode) {
+                KeyEvent.KEYCODE_DPAD_LEFT, KeyEvent.KEYCODE_MEDIA_REWIND -> if (!live) { seek(-10_000); return true }
+                KeyEvent.KEYCODE_DPAD_RIGHT, KeyEvent.KEYCODE_MEDIA_FAST_FORWARD -> if (!live) { seek(10_000); return true }
+                KeyEvent.KEYCODE_DPAD_CENTER, KeyEvent.KEYCODE_ENTER, KeyEvent.KEYCODE_NUMPAD_ENTER -> {
+                    if (live) showList() else togglePause()
+                    return true
+                }
+                KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE -> { togglePause(); return true }
+                KeyEvent.KEYCODE_DPAD_UP, KeyEvent.KEYCODE_CHANNEL_UP -> if (live) { zap(1); return true }
+                KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_CHANNEL_DOWN -> if (live) { zap(-1); return true }
+                KeyEvent.KEYCODE_MENU -> { toggleBar(); return true }
+            }
+        }
+        return super.dispatchKeyEvent(e)
+    }'''
+              # Replace entire dispatchKeyEvent block
+              import re
+              v = re.sub(r'override fun dispatchKeyEvent\(e: KeyEvent\): Boolean \{[\s\S]*?return super\.dispatchKeyEvent\(e\)\s*\}', key_hook, v)
+
+              with open(vlc_path, 'w', encoding='utf-8') as f:
+                  f.write(v)
+              print('✓ VlcActivity.kt optimized')
+
+          # 3. Patch PlayerActivity.kt: instant launch to VLC for movies (Zero Delay)
+          player_path = 'app/src/main/java/com/aj/iptv/player/AjPlayer.kt'
+          if os.path.exists(player_path):
+              with open(player_path, 'r', encoding='utf-8') as f:
+                  p = f.read()
+              zero_delay = '''live = intent.getBooleanExtra(\"live\", true)
+        if (!live && VlcBridge.available() && prefs.getInt(\"engine\", 0) != 1) { openVlc(); return }'''
+              p = p.replace('live = intent.getBooleanExtra(\"live\", true)', zero_delay)
+              with open(player_path, 'w', encoding='utf-8') as f:
+                  f.write(p)
+              print('✓ PlayerActivity.kt patched for 0s movie launch')
           "
 
       - uses: actions/setup-java@v4
@@ -45,7 +121,7 @@ jobs:
         with:
           gradle-version: 8.7
 
-      - name: Build APK with All Players (ExoPlayer + VLC + FFmpeg)
+      - name: Build Optimized APK
         shell: bash
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
