@@ -1,40 +1,50 @@
-name: Build APK (FFmpeg fallback)
-
+name: Build APK
 on:
   push:
   workflow_dispatch:
-
 permissions:
   contents: write
-
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - run: unzip -o project.zip
 
-      - name: Extract Android project
-        run: unzip -o project.zip
+      - name: Raise minSdk to 24
+        shell: bash
+        run: |
+          python3 -c "
+          import os
+          gradle_path = 'app/build.gradle.kts'
+          if os.path.exists(gradle_path):
+              with open(gradle_path, 'r', encoding='utf-8') as f:
+                  g = f.read()
+              g = g.replace('minSdk = 21', 'minSdk = 24')
+              with open(gradle_path, 'w', encoding='utf-8') as f:
+                  f.write(g)
+              print('✓ Set minSdk = 24 successfully')
+          "
 
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: 17
 
       - name: Prepare signing key
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-        shell: bash
         run: |
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/ajiptv.p12"
             echo "KEYSTORE_FILE=$RUNNER_TEMP/ajiptv.p12" >> "$GITHUB_ENV"
           fi
 
-      - name: Build with FFmpeg / VLC compatibility attempts
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
+
+      - name: Build
         shell: bash
         env:
           KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
@@ -42,36 +52,23 @@ jobs:
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
         run: bash ci-build.sh
 
-      - name: Collect APK files
-        if: always()
-        shell: bash
-        run: |
-          if [ -f app/build/outputs/apk/debug/app-debug.apk ]; then
-            cp app/build/outputs/apk/debug/app-debug.apk AJIPTV.apk
-          fi
-          if [ -f admin/build/outputs/apk/debug/admin-debug.apk ]; then
-            cp admin/build/outputs/apk/debug/admin-debug.apk AJIPTV-Admin.apk
-          fi
-          ls -l AJIPTV.apk AJIPTV-Admin.apk 2>/dev/null || true
+      - run: |
+          cp app/build/outputs/apk/debug/app-debug.apk AJIPTV.apk
+          cp admin/build/outputs/apk/debug/admin-debug.apk AJIPTV-Admin.apk || true
 
-      - name: Upload APK artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: AJIPTV-apks
-          path: |
-            AJIPTV.apk
-            AJIPTV-Admin.apk
-          if-no-files-found: warn
-          retention-days: 7
+          name: AJIPTV-apk
+          path: AJIPTV.apk
 
-      - name: Publish release
-        if: success() && hashFiles('AJIPTV.apk') != ''
-        uses: softprops/action-gh-release@v2
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AJIPTV-Admin-apk
+          path: AJIPTV-Admin.apk
+
+      - uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ github.run_number }}
           name: AJIPTV v${{ github.run_number }}
-          files: |
-            AJIPTV.apk
-            AJIPTV-Admin.apk
+          files: AJIPTV.apk
           make_latest: true
