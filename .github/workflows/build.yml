@@ -4,9 +4,13 @@ on:
   workflow_dispatch:
 permissions:
   contents: write
+concurrency:
+  group: build
+  cancel-in-progress: true
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - run: unzip -o project.zip
@@ -34,7 +38,7 @@ jobs:
         run: bash ci-build.sh
       - run: |
           cp app/build/outputs/apk/debug/app-debug.apk AJIPTV.apk
-          cp admin/build/outputs/apk/debug/admin-debug.apk AJIPTV-Admin.apk || true
+          cp admin/build/outputs/apk/debug/admin-debug.apk AJIPTV-Admin.apk
       - uses: actions/upload-artifact@v4
         with:
           name: AJIPTV-apk
